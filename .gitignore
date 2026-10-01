@@ -1,0 +1,64 @@
+# --- virtual environments ---------------------------------------------------
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# --- python build / cache artifacts ----------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# --- tooling caches --------------------------------------------------------
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
+# --- downloaded market data (never versioned) ------------------------------
+# Reproducible from `scripts/run_backtest.py` without `--offline`.
+# Cached CSVs are provider output, not source.
+data/raw/*
+!data/raw/.gitkeep
+
+# --- experiment exports (regenerate with --export-csv) --------------------
+data/exports/*
+!data/exports/.gitkeep
+
+# --- secrets and local environment -----------------------------------------
+# Nothing in this project reads a secret, but a downloaded provider cookie or
+# an API key added later must never reach a commit by accident.
+.env
+.env.*
+*.env
+secrets.json
+secrets.yaml
+secrets.yml
+*.pem
+*.key
+*.p12
+credentials.json
+service-account*.json
+.cookies.json
+.yfinance/
+
+# --- local noise and logs --------------------------------------------------
+*.log
+*.out
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
