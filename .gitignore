@@ -37,6 +37,17 @@ data/raw/*
 data/exports/*
 !data/exports/.gitkeep
 
+# --- news datasets (licensed provider output, regenerate from `news fetch`) --
+# Raw captures, normalized articles, inferred events and manifests all stay out
+# of version control. The code that produces them is the artifact worth
+# reviewing; a corpus of redistributable news is not.
+data/news/*
+!data/news/.gitkeep
+# The offline fixtures used by tests are small, synthetic and self-authored, so
+# they are safe to track. Keep that narrow on purpose.
+!data/news/fixtures/
+!data/news/fixtures/**
+
 # --- secrets and local environment -----------------------------------------
 # Nothing in this project reads a secret, but a downloaded provider cookie or
 # an API key added later must never reach a commit by accident.
