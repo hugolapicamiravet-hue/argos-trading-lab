@@ -13,6 +13,7 @@ information have been acted on?** Everything else — schemas, storage, the audi
 - [Providers](#providers)
 - [Coverage you cannot get](#coverage-you-cannot-get)
 - [Running it](#running-it)
+- [Strategy integration: deferred](#strategy-integration-deferred-on-purpose)
 - [What the audit checks](#what-the-audit-checks)
 - [Known unknowns](#known-unknowns)
 
@@ -67,13 +68,30 @@ An article's identity is resolved in three steps, first match wins:
    let unrelated sites share an identity.
 3. **Content fingerprint** — `fp:<sha256>` of normalized title and summary text
 
-Deduplication keeps the earliest `published_at` — the moment the information
-first became public — and sorts deterministically by id. Fingerprints use
-SHA-256, never the built-in `hash()`, whose values vary per process and would
-make a store non-reproducible across runs.
+Deduplication groups records by **any** shared signal — identity, canonical URL,
+or content fingerprint — and not by identity alone. Grouping by identity alone
+would not work in practice: two feeds syndicate one story and each assigns its
+own provider id, so both records pass step 1 and both survive, double-counting a
+single piece of news. A record that links two otherwise-separate groups merges
+those groups too, so the result does not depend on input order.
 
-Two provider ids for one wire story survive step 1 and 2, so the audit reports
-them as `duplicate-content`: it cannot tell a syndicated story from two genuinely
+Within a group the earliest `published_at` wins — the moment the information
+first became public — and ties break on article id, so output is fully
+deterministic regardless of fetch order. Fingerprints use SHA-256, never the
+built-in `hash()`, whose values vary per process and would make a store
+non-reproducible across runs.
+
+The fingerprint includes source, publisher, normalized title and summary, **and
+the publication instant**, so it only fires on records that agree on all of
+those. Two unrelated reports sharing a headline therefore stay separate.
+
+`article_identity` remains a single-key cascade because it is used where only
+one key is wanted (for example, naming an article before its record exists).
+`dedupe_articles` is the multi-signal one.
+
+The residual risk is a syndicated story with two provider ids, two different
+URLs, and slightly different text. That survives dedupe, and the audit reports
+it as `duplicate-content`: it cannot tell a syndicated story from two genuinely
 different reports with the same text.
 
 ---
@@ -286,6 +304,51 @@ The hash check matters more than its size suggests. Size alone is not identity: 
 fetch that stopped one record short has almost the same byte count as a complete
 one, and an amended row of the same length is indistinguishable. Only the
 SHA-256 proves the file is the one the manifest describes.
+
+---
+
+## Strategy integration: deferred, on purpose
+
+No strategy consumes the news score yet. That is a decision with reasons, not an
+unfinished feature.
+
+The layer is complete and usable: articles normalize, events derive, scores
+compute, and the audit gates the result. What is missing is a corpus to measure
+against. The reasons, in the order they would matter:
+
+1. **There is no historical sample.** The plan in use serves about two years of
+   news. A 2020–2025 news backtest is impossible; a 2024–2025 one is too short to
+   separate an effect from noise, and it overlaps almost entirely with the price
+   data already in use.
+2. **`confidence` is uncalibrated.** It comes from a model asked to classify, not
+   from a study against realized outcomes. Weighting a score by an uncalibrated
+   probability is a modelling choice made without evidence, and any PnL produced
+   would measure the classifier as much as the market.
+3. **Coverage is thinner than it looks.** `require_ticker` drops untagged events by
+   default, and provider ticker tags are unverified. The effective sample is
+   smaller than the record count suggests.
+4. **A number produced anyway would be uninterpretable.** With the above, a
+   backtest result could not distinguish "no edge" from "not enough data" from
+   "mislabelled events". Reporting it would look like a finding while carrying
+   none of the information a finding needs.
+
+### What was done instead
+
+`tests/news/test_signal_recovery.py` plants a known relationship and checks that
+the score recovers it at exactly the intended lag. If the lag were off by a day,
+if same-day news leaked into a same-day score, or if appending future articles
+rewrote past scores, those tests fail.
+
+That is the precondition for building a strategy, and it is not a claim that the
+relationship exists. It says the plumbing is not lossy, so a strategy built on
+this layer would be measuring something real rather than a bug.
+
+### When to revisit
+
+All three of: a corpus long enough to be meaningful, a calibration study mapping
+confidence to realized outcomes, and resolved licensing terms permitting
+published research. Until then the score is available as a feature and is not
+wired into a backtest.
 
 ---
 

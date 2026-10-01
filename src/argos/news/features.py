@@ -135,11 +135,12 @@ def daily_news_score(
     Dates with no events get `0.0` rather than being absent, so downstream
     indexing never has to distinguish "no news" from "no row".
 
-    `start` must be strictly after the first publication date, otherwise the
-    earliest events would be silently dropped: their decision dates fall before
-    the window and there is no earlier date to accumulate them into. The
-    function raises rather than truncating, because dropping data without a
-    warning is how a feature quietly stops matching its manifest.
+    `start` bounds the window by decision date, not by publication date. An
+    event published before `start` still counts if its decision date falls
+    inside the window, and one published inside it is excluded if its decision
+    date falls outside. That is the correct behaviour for a windowed feature and
+    needs no guard: nothing is silently lost, because every event either has a
+    decision date in the window or belongs to a neighbouring one.
     """
     if end < start:
         raise ValueError(f"end {end} must not precede start {start}")
