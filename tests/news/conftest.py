@@ -54,6 +54,10 @@ def make_payload(
     return payload
 
 
+_DEFAULT_URL = object()
+"""Sentinel so `url=None` can still mean "this article has no URL"."""
+
+
 def make_article(
     *,
     article_id: str | None = None,
@@ -62,16 +66,23 @@ def make_article(
     published_at: dt.datetime = dt.datetime(2025, 7, 31, 20, 5, tzinfo=UTC),
     retrieved_at: dt.datetime = NOW,
     publisher: str | None = "Reuters",
-    url: str | None = "https://www.reuters.com/markets/apple-q3-2025",
+    url: str | None = _DEFAULT_URL,
     tickers: tuple[str, ...] = ("AAPL",),
     raw_source_id: str | None = "n1",
 ) -> NewsArticle:
     """A normalized article, with `article_id` derived unless given explicitly.
 
-    Deriving it matters: a hardcoded id would make every "distinct" article in a
-    test share one identity, and dedupe would then silently collapse them. That
-    failure mode looks like a passing test.
+    Deriving the id matters: a hardcoded one would make every "distinct" article
+    in a test share an identity, and dedupe would then silently collapse them.
+    That failure mode looks like a passing test.
+
+    The default URL is derived for the same reason. Dedupe compares canonical
+    URLs across records, so a shared default URL would collapse unrelated
+    fixtures just as silently.
     """
+    if url is _DEFAULT_URL:
+        url = f"https://www.reuters.com/markets/story-{raw_source_id}"
+
     article = NewsArticle(
         article_id=article_id or "__pending__",
         source="massive",

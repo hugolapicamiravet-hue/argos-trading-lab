@@ -18,6 +18,15 @@ Every step uses SHA-256 over canonical JSON, never Python's `hash()`. `hash()` i
 salted per process (PYTHONHASHSEED), so ids built from it would differ between
 two runs of the same pipeline, silently defeating both dedupe and event identity.
 Tests pin this; the comment is here so nobody "simplifies" it back.
+
+That cascade defines one article's *identity*. It is deliberately not how
+deduplication groups records: two feeds syndicate one story and each gives it
+its own provider id, so both records pass step 1 and both survive, splitting one
+article into two identities and double-counting it. `dedupe_articles` therefore
+groups by *any* shared signal -- identity, canonical URL, or fingerprint -- using
+union-find so a record linking two groups merges them and the outcome does not
+depend on input order. `article_key` stays a cascade because callers that only
+need one key should not get a merge.
 """
 
 from __future__ import annotations
@@ -182,6 +191,23 @@ def _fingerprint_from_payload(payload: dict, source: str) -> str:
     )
 
 
+def _merge_signals(article: NewsArticle) -> set[str]:
+    """Every signal by which this article can be recognized as another one.
+
+    Identity alone is not enough to collapse a syndicated story: two feeds give
+    the same article different provider ids, so both records pass the id check
+    and both survive. Comparing the canonical URL and the content fingerprint
+    across records is what actually collapses them, which is the double-count
+    this module exists to prevent.
+    """
+    signals = {article_key(article)}
+    url = canonical_url(article.url)
+    if url:
+        signals.add(f"{URL_PREFIX}{url}")
+    signals.add(f"{FINGERPRINT_PREFIX}{article.fingerprint}")
+    return signals
+
+
 def dedupe_articles(
     articles: Iterable[NewsArticle],
 ) -> tuple[tuple[NewsArticle, ...], tuple[str, ...]]:
@@ -189,30 +215,48 @@ def dedupe_articles(
 
     Returns `(unique_articles, dropped_identities)`.
 
+    Records are grouped by any shared signal -- identity, canonical URL, or
+    content fingerprint -- so a story arriving under two provider ids collapses
+    to one. A record may bridge two groups that were previously separate; the
+    groups then merge.
+
     Earliest wins because an article's first appearance is the one closest in
     spirit to what the market saw first. Ties break on article_id so the output
     is fully deterministic regardless of input order.
     """
-    winners: dict[str, NewsArticle] = {}
+    order = list(articles)
+    parent = list(range(len(order)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        left_root, right_root = find(left), find(right)
+        if left_root != right_root:
+            parent[max(left_root, right_root)] = min(left_root, right_root)
+
+    seen: dict[str, int] = {}
+    for index, article in enumerate(order):
+        for signal in _merge_signals(article):
+            previous = seen.get(signal)
+            if previous is None:
+                seen[signal] = index
+            else:
+                union(index, previous)
+
+    groups: dict[int, list[NewsArticle]] = {}
+    for index, article in enumerate(order):
+        groups.setdefault(find(index), []).append(article)
+
     dropped: list[str] = []
+    winners: list[NewsArticle] = []
+    for group in groups.values():
+        winner = min(group, key=lambda a: (a.published_at, a.article_id))
+        winners.append(winner)
+        dropped.extend(a.article_id for a in group if a is not winner)
 
-    for article in articles:
-        key = article_key(article)
-        incumbent = winners.get(key)
-        if incumbent is None:
-            winners[key] = article
-            continue
-        better = (article.published_at, article.article_id) < (
-            incumbent.published_at,
-            incumbent.article_id,
-        )
-        if better:
-            winners[key] = article
-            dropped.append(incumbent.article_id)
-        else:
-            dropped.append(article.article_id)
-
-    unique = tuple(
-        sorted(winners.values(), key=lambda a: (a.published_at, a.article_id))
-    )
+    unique = tuple(sorted(winners, key=lambda a: (a.published_at, a.article_id)))
     return unique, tuple(sorted(dropped))

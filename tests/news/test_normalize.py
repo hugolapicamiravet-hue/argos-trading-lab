@@ -124,7 +124,13 @@ class TestNormalizeArticles:
         batch = [
             make_payload(article_id="ok"),
             make_payload(article_id="bad-time", published=None),
-            make_payload(article_id="also-ok", published="2025-08-01T12:00:00Z"),
+            make_payload(
+                article_id="also-ok",
+                title="Nvidia beats Q3 expectations",
+                summary="Data center revenue.",
+                url="https://www.reuters.com/markets/nvidia-q3-2025",
+                published="2025-08-01T12:00:00Z",
+            ),
         ]
         result = normalize_articles(batch, source="massive", retrieved_at=NOW)
         assert result.accepted == 2
@@ -182,8 +188,14 @@ class TestTemporalPolicyEdgeCases:
     def test_dst_boundary_offsets_are_normalized_not_shifted(self):
         # US DST began 2025-03-09. A feed reporting -04:00 on either side must
         # land on the same UTC instant regardless of which offset it sends.
-        before = make_payload(article_id="dst-a", published="2025-03-08T20:05:00-05:00")
-        after = make_payload(article_id="dst-b", published="2025-03-09T20:05:00-04:00")
+        before = make_payload(
+            article_id="dst-a", url="https://www.reuters.com/markets/before-dst",
+            published="2025-03-08T20:05:00-05:00",
+        )
+        after = make_payload(
+            article_id="dst-b", url="https://www.reuters.com/markets/after-dst",
+            published="2025-03-09T20:05:00-04:00",
+        )
         result = normalize_articles([before, after], source="massive", retrieved_at=NOW)
         # 20:05-05:00 == 01:05Z next day; 20:05-04:00 == 00:05Z. Different
         # instants, and the pipeline must not pretend otherwise.

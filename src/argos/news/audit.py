@@ -273,9 +273,11 @@ def audit_duplicates(
                 )
             )
 
-    # Same fingerprint under different identities is the softer failure: two
-    # distinct provider ids for one wire story, which will not be caught by the
-    # identity cascade but will still double the score.
+    # Same fingerprint under different identities. `dedupe_articles` merges on
+    # fingerprint as well as identity, so reaching this means the articles were
+    # not passed through dedupe, or the file was assembled by hand -- either way
+    # the input is not what the pipeline would have produced, and the score
+    # would double-count the story.
     by_fingerprint: dict[str, list[NewsArticle]] = {}
     for article in articles:
         by_fingerprint.setdefault(article.fingerprint, []).append(article)
@@ -452,11 +454,28 @@ def audit_manifest_files(
 
     A manifest pointing at files that changed underneath it is worse than no
     manifest, because it lends false authority to a dataset nobody has verified.
+
+    Two conventions occur for the recorded path in practice: the builder is
+    handed an already-rooted path (`<root>/raw/x.json`), or a path relative to
+    the store that the caller passes back as `root`. Resolving only by joining
+    breaks the first convention whenever `root` is itself relative -- exactly
+    what a caller who typed `--root data/news` gets, since `root/root/raw/...`
+    does not exist. So the recorded path is tried as written, and `root` is used
+    only to rescue the relative form.
     """
     from pathlib import Path
 
     findings: list[Finding] = []
     base = Path(root) if root else None
+
+    def locate(candidate: Path) -> Path | None:
+        if candidate.exists():
+            return candidate
+        if base is not None and not candidate.is_absolute():
+            joined = base / candidate
+            if joined.exists():
+                return joined
+        return None
 
     for group, digests in (
         ("raw", manifest.raw_files),

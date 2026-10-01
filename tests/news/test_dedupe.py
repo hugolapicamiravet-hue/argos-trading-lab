@@ -192,21 +192,103 @@ class TestDedupeArticles:
 
     def test_distinct_articles_are_all_kept(self):
         articles = [
-            make_article(raw_source_id="n1"),
-            make_article(raw_source_id="n2"),
-            make_article(raw_source_id="n3"),
+            make_article(raw_source_id="n1", title="First story", summary="One."),
+            make_article(raw_source_id="n2", title="Second story", summary="Two."),
+            make_article(raw_source_id="n3", title="Third story", summary="Three."),
         ]
         kept, duplicates = dedupe_articles(articles)
         assert len(kept) == 3
         assert duplicates == ()
 
+    def test_the_same_story_under_two_provider_ids_collapses(self):
+        # Two feeds syndicate one story and each assigns its own id. Identity
+        # cannot see this; the shared URL can. Both records contributing would
+        # double the story's weight in any score.
+        original = make_article(raw_source_id="n1")
+        mirror = make_article(
+            raw_source_id="mirror-1",
+            url=original.url,
+            title=original.title,
+            summary=original.summary,
+            published_at=original.published_at + dt.timedelta(minutes=5),
+        )
+        kept, dropped = dedupe_articles([original, mirror])
+        assert kept == (original,)
+        assert dropped == (mirror.article_id,)
+
+    def test_the_same_story_reached_by_a_different_url_collapses(self):
+        # Tracking parameters and a trailing slash are the usual difference
+        # between a link that was shared and the one that was read.
+        original = make_article(raw_source_id="n1")
+        shared = make_article(
+            raw_source_id="mirror-2",
+            url=original.url + "?utm_source=twitter#comments",
+            title=original.title,
+            summary=original.summary,
+            published_at=original.published_at,
+        )
+        kept, _ = dedupe_articles([original, shared])
+        assert len(kept) == 1
+
+    def test_identical_text_at_the_same_instant_collapses(self):
+        # Same publisher, same title, same summary, same instant: one press
+        # release carried twice is one event.
+        original = make_article(raw_source_id="n1", url="https://a.invalid/1")
+        twin = make_article(raw_source_id="n2", url="https://b.invalid/2")
+        kept, _ = dedupe_articles([original, twin])
+        assert len(kept) == 1
+
+    def test_a_bridging_record_merges_two_groups(self):
+        # A is reachable from B by shared URL, and from C by identical text. A
+        # greedy pass that only compared each record to a winner set would keep
+        # all three; the groups have to be unioned for the collapse to happen.
+        moment = dt.datetime(2025, 7, 1, 9, 0, tzinfo=UTC)
+        a = make_article(raw_source_id="a", url="https://x.invalid/story", published_at=moment)
+        b = make_article(
+            raw_source_id="b",
+            url=a.url,  # same URL as a
+            title="B copy",
+            summary="Different words, same link.",
+            published_at=moment,
+        )
+        c = make_article(
+            raw_source_id="c",
+            url="https://y.invalid/story",
+            title=a.title,  # same words as a
+            summary=a.summary,
+            published_at=moment,
+        )
+        kept, dropped = dedupe_articles([a, b, c])
+        assert len(kept) == 1
+        assert sorted(dropped) == sorted([b.article_id, c.article_id])
+
+    def test_merging_is_order_independent(self):
+        a = make_article(raw_source_id="a", url="https://x.invalid/story")
+        b = make_article(raw_source_id="b", url=a.url, title="b", summary="b")
+        c = make_article(
+            raw_source_id="c", url="https://y.invalid/story", title="c", summary="c"
+        )
+        forward, dropped_forward = dedupe_articles([a, b, c])
+        backward, dropped_backward = dedupe_articles([c, b, a])
+        assert forward == backward
+        assert dropped_forward == dropped_backward
+
     def test_output_is_sorted_by_publication_time_then_id(self):
         # Output order must not depend on input order, otherwise two runs over
         # the same data in different fetch orders produce different files.
         articles = [
-            make_article(raw_source_id="n3", published_at=dt.datetime(2025, 7, 3, tzinfo=UTC)),
-            make_article(raw_source_id="n1", published_at=dt.datetime(2025, 7, 1, tzinfo=UTC)),
-            make_article(raw_source_id="n2", published_at=dt.datetime(2025, 7, 2, tzinfo=UTC)),
+            make_article(
+                raw_source_id="n3", title="Third", summary="c",
+                published_at=dt.datetime(2025, 7, 3, tzinfo=UTC),
+            ),
+            make_article(
+                raw_source_id="n1", title="First", summary="a",
+                published_at=dt.datetime(2025, 7, 1, tzinfo=UTC),
+            ),
+            make_article(
+                raw_source_id="n2", title="Second", summary="b",
+                published_at=dt.datetime(2025, 7, 2, tzinfo=UTC),
+            ),
         ]
         kept, _ = dedupe_articles(articles)
         assert [a.raw_source_id for a in kept] == ["n1", "n2", "n3"]
@@ -241,5 +323,8 @@ class TestDedupeArticles:
         assert dedupe_articles([]) == ((), ())
 
     def test_generator_input_is_accepted(self):
-        kept, _ = dedupe_articles(make_article(raw_source_id=f"n{i}") for i in range(3))
+        kept, _ = dedupe_articles(
+            make_article(raw_source_id=f"n{i}", title=f"Story {i}", summary=f"Body {i}.")
+            for i in range(3)
+        )
         assert len(kept) == 3
