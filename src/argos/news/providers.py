@@ -176,8 +176,10 @@ class MassiveNewsProvider:
             )
         # 5 req/min on the free tier is a 12-second minimum interval. Defaulting
         # to the free plan means an accidental burst is throttled by default
-        # rather than discovered by getting rate-limited.
-        self.min_interval = 0.0 if min_interval is None else float(min_interval)
+        # rather than discovered by getting rate-limited. Callers may still pass
+        # min_interval=0.0 to opt out, but they have to say so.
+        rpm = MASSIVE_PLAN_LIMITS[plan]["requests_per_minute"]
+        self.min_interval = (60.0 / rpm) if min_interval is None else float(min_interval)
         self._opener = opener or urllib.request.urlopen
         self._sleep = sleep or time.sleep
         self._last_request_at: float | None = None
@@ -217,7 +219,12 @@ class MassiveNewsProvider:
 
     def _request_json(self, url: str, page: int) -> tuple[Mapping[str, object], int]:
         last_error: Exception | None = None
-        for attempt in range(1, self.max_retries + 1):
+        # `max_retries` counts retries, so the loop makes one attempt plus that
+        # many. Treating it as a total attempt budget would make max_retries=0
+        # mean "never send the request", which is not what disabling retries
+        # should mean.
+        max_attempts = self.max_retries + 1
+        for attempt in range(1, max_attempts + 1):
             self._throttle()
             self.request_count += 1
             request = urllib.request.Request(
@@ -240,11 +247,11 @@ class MassiveNewsProvider:
             except (TimeoutError, urllib.error.URLError, OSError) as exc:
                 last_error = exc
 
-            if attempt < self.max_retries:
+            if attempt < max_attempts:
                 self._sleep(RETRY_BACKOFF_SECONDS * attempt)
 
         raise ProviderError(
-            f"{self.name} request failed after {self.max_retries} attempts for "
+            f"{self.name} request failed after {max_attempts} attempts for "
             f"{redact(url, self.api_key)}: {redact(str(last_error), self.api_key)}"
         )
 
@@ -276,7 +283,12 @@ class MassiveNewsProvider:
             response = self._to_response(payload, status, url, page + 1, params)
             yield response
             page += 1
-            url = response.next_url or ""
+            # Follow the cursor out of the raw payload, not
+            # `response.next_url`. The response copy is redacted for storage and
+            # logging, and the redaction replaces the apiKey with "***", which
+            # the next request would then send as its credential.
+            cursor = payload.get("next_url")
+            url = str(cursor) if isinstance(cursor, str) and cursor else ""
 
     def fetch_all(
         self, *, max_pages: int = 10, **params: object
@@ -318,7 +330,14 @@ class MassiveNewsProvider:
         next_url = payload.get("next_url")
         return ProviderResponse(
             results=tuple(raw_results),
-            next_url=str(next_url) if isinstance(next_url, str) and next_url else None,
+            # Redacted like request_url. The cursor is a full URL including its
+            # apiKey, and this object gets written into manifests and logs, so
+            # leaving it raw would put a live key in version control.
+            next_url=(
+                redact(str(next_url), self.api_key)
+                if isinstance(next_url, str) and next_url
+                else None
+            ),
             status=status,
             request_url=redact(url, self.api_key),
             fetched_at=dt.datetime.now(UTC),
@@ -333,10 +352,27 @@ def urlencode_preserving(query: Mapping[str, object]) -> str:
     `urlencode`'s default `quote_via=quote_plus` turns a space into `+`, which
     some providers decode differently than expected for date filters. Using
     explicit quoting keeps the value byte-comparable to what we intended.
+
+    Sequences are joined with commas because that is how providers express
+    multi-valued filters: Massive wants `tickers=AAPL,MSFT`. Plain
+    `str()` on a list would send `tickers=['AAPL', 'MSFT']`, which is not a
+    syntax error, is not rejected, and matches nothing. A `--tickers AAPL MSFT`
+    that returns zero articles with a 200 is a failure nobody notices.
     """
-    parts = []
+    parts: list[str] = []
     for key, value in query.items():
-        text = ("true" if value else "false") if isinstance(value, bool) else str(value)
+        if value is None:
+            # An unset filter must be absent, not the literal string "None",
+            # which is a value the provider will happily accept and ignore.
+            continue
+        if isinstance(value, bool):
+            text = "true" if value else "false"
+        elif isinstance(value, (str, bytes)):
+            text = value.decode() if isinstance(value, bytes) else value
+        elif isinstance(value, Sequence):
+            text = ",".join(str(item) for item in value)
+        else:
+            text = str(value)
         parts.append(f"{urllib.parse.quote(str(key))}={urllib.parse.quote(text)}")
     return "&".join(parts)
 
