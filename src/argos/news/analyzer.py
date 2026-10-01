@@ -32,7 +32,7 @@ import os
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from argos.news.models import (
@@ -43,6 +43,7 @@ from argos.news.models import (
     _check_unit_interval,
     _stable_digest,
 )
+from argos.news.providers import redact
 
 DETERMINISTIC_ANALYZER_VERSION = "1.0.0"
 
@@ -125,6 +126,11 @@ class AnalysisResult:
     confidence: float | None = None
     rationale: str | None = None
     raw_event_type: str | None = None
+    # The literal string the model emitted for `direction`, kept only when it was
+    # not one of the accepted values. Without it a model answering "VERY
+    # BULLISH" yields an ordinary-looking UNKNOWN event with no trace that
+    # anything went wrong, indistinguishable from having found nothing.
+    raw_direction: str | None = None
     error: str | None = None
 
     def __post_init__(self) -> None:
@@ -163,20 +169,46 @@ class AnalysisResult:
             "confidence": self.confidence,
             "rationale": self.rationale,
             "raw_event_type": self.raw_event_type,
+            "raw_direction": self.raw_direction,
             "error": self.error,
         }
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, object]) -> AnalysisResult:
+        direction = cls._coerce_direction(payload.get("direction"))
         return cls(
             event_type=EventType.coerce(payload.get("event_type", EventType.OTHER)),
-            direction=Direction.coerce(payload.get("direction", Direction.UNKNOWN)),
+            direction=direction,
             magnitude=payload.get("magnitude"),  # type: ignore[arg-type]
             confidence=payload.get("confidence"),  # type: ignore[arg-type]
             rationale=payload.get("rationale"),  # type: ignore[arg-type]
             raw_event_type=payload.get("raw_event_type"),  # type: ignore[arg-type]
+            raw_direction=cls._rejected_direction(payload.get("direction"), direction),
             error=payload.get("error"),  # type: ignore[arg-type]
         )
+
+    @staticmethod
+    def _coerce_direction(value: object) -> Direction:
+        return Direction.coerce(value)
+
+    @staticmethod
+    def _rejected_direction(raw: object, coerced: Direction) -> str | None:
+        """Return the emitted text only when it was not a value we accept.
+
+        A recognized value that happens to coerce to UNKNOWN -- `UNKNOWN` itself
+        -- is not a rejection. Treating it as one would corrupt every cached
+        UNKNOWN result on its way back out of `from_dict`.
+        """
+        if coerced is not Direction.UNKNOWN or not isinstance(raw, str):
+            return None
+        text = raw.strip()
+        if not text:
+            return None
+        try:
+            Direction(text.upper())
+        except ValueError:
+            return text
+        return None
 
 
 # --------------------------------------------------------------------------
@@ -476,7 +508,9 @@ class OpenAIRequest:
 
     payload: Mapping[str, object]
     url: str
-    api_key: str
+    # repr=False: a dataclass repr is what ends up in a debugger, a traceback
+    # and a pytest failure report. With the default, any of those prints the key.
+    api_key: str = field(repr=False)
 
     def redacted(self) -> dict:
         """The payload with the key removed, safe to log."""
@@ -618,7 +652,13 @@ class LLMAnalyzer:
         return OpenAIRequest(payload=payload, url=self.base_url, api_key=self.api_key)
 
     def analyze(self, article: NewsArticle) -> AnalysisResult:
-        cache_key = f"{article.article_id}|{self._identity.cache_key_suffix}"
+        # The key includes the content fingerprint, not just the article id.
+        # Providers do amend stories, and a corrected headline is a different
+        # claim deserving a different analysis; keying on identity alone would
+        # hand back the classification of the version that no longer exists.
+        cache_key = (
+            f"{article.article_id}|{article.fingerprint}|{self._identity.cache_key_suffix}"
+        )
         if self._cache is not None:
             cached = self._cache.get(cache_key)
             if cached is not None:
@@ -627,10 +667,20 @@ class LLMAnalyzer:
 
         request = self.build_request(article)
         self.call_count += 1
-        body = self._transport(request)
+        try:
+            body = self._transport(request)
+        except Exception as exc:
+            # A timeout or connection reset on article 400 of 500 must not throw
+            # away the 399 that already succeeded. Fail this article closed and
+            # let the batch finish, so the gap is visible and re-runnable.
+            detail = redact(str(exc), self.api_key)
+            result = AnalysisResult.failure(f"transport failed: {type(exc).__name__}: {detail}")
+        else:
+            result = parse_llm_response(body)
 
-        result = parse_llm_response(body)
         if self._cache is not None:
+            # Failures are cached too. Re-running a batch after a network blip
+            # should not re-bill the same API call for the same article.
             self._cache.put(cache_key, result.to_dict())
         return result
 
@@ -648,6 +698,14 @@ def parse_llm_response(body: Mapping[str, object]) -> AnalysisResult:
     article that scores zero is visible in the dataset and recoverable on a
     retry.
     """
+    if not isinstance(body, Mapping):
+        # A transport can hand back None, a list or an error object. `.get` on
+        # any of those raises, which would abort the batch at the one article
+        # that misbehaved.
+        return AnalysisResult.failure(
+            f"response body was {type(body).__name__}, expected an object"
+        )
+
     if body.get("error"):
         return AnalysisResult.failure(f"provider error: {body['error']}")
 
@@ -681,6 +739,7 @@ def parse_llm_response(body: Mapping[str, object]) -> AnalysisResult:
         result = AnalysisResult.from_dict(parsed)
     except (TypeError, ValueError) as exc:
         return AnalysisResult.failure(f"output failed validation: {exc}")
+
     if result.failed:
         return result
     if result.direction is Direction.UNKNOWN and result.event_type is EventType.OTHER:
@@ -694,7 +753,7 @@ def parse_llm_response(body: Mapping[str, object]) -> AnalysisResult:
 def _extract_output_text(body: Mapping[str, object]) -> str | None:
     output = body.get("output")
     if not isinstance(output, list):
-        return None
+        return _extract_convenience_output_text(body)
     for item in output:
         if not isinstance(item, Mapping):
             continue
@@ -708,16 +767,47 @@ def _extract_output_text(body: Mapping[str, object]) -> str | None:
                 value = block.get("text")
                 if isinstance(value, str) and value.strip():
                     return value
+    return _extract_convenience_output_text(body)
+
+
+def _extract_convenience_output_text(body: Mapping[str, object]) -> str | None:
+    """Accept the flattened `output_text` field when the API returns it.
+
+    The nested `output[].content[].output_text` form is the documented REST
+    shape, but SDKs and proxies also surface a single flattened `output_text`.
+    Ignoring it means a perfectly good analysis is discarded as UNKNOWN, which
+    is indistinguishable from the model having found nothing.
+    """
+    value = body.get("output_text")
+    if isinstance(value, str) and value.strip():
+        return value
     return None
 
 
 def _has_refusal(body: Mapping[str, object]) -> bool:
+    """Detect a refusal at either level the API can use.
+
+    A refusal arrives either as an `output[]` item of type `refusal`, or, in the
+    documented form, as an `output[].content[]` block of type `refusal`. Only
+    checking one of them makes a real refusal report itself as "no output text",
+    which sends an operator looking for a schema problem instead of a model that
+    declined.
+    """
     output = body.get("output")
     if not isinstance(output, list):
         return False
-    return any(
-        isinstance(item, Mapping) and item.get("type") == "refusal" for item in output
-    )
+    for item in output:
+        if not isinstance(item, Mapping):
+            continue
+        if item.get("type") == "refusal":
+            return True
+        content = item.get("content")
+        if isinstance(content, list) and any(
+            isinstance(block, Mapping) and block.get("type") == "refusal"
+            for block in content
+        ):
+            return True
+    return False
 
 
 # --------------------------------------------------------------------------
