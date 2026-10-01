@@ -32,8 +32,26 @@ class TestNewsArticleValidation:
             make_article(title="   ")
 
     def test_rejects_empty_article_id(self):
+        # Built directly rather than via the fixture: the fixture treats "" as
+        # "derive one", which would quietly defeat the assertion.
         with pytest.raises(ValueError, match="article_id must not be empty"):
-            make_article(article_id="")
+            NewsArticle(
+                article_id="",
+                source="massive",
+                title="Story",
+                published_at=dt.datetime(2025, 7, 31, 20, 5, tzinfo=UTC),
+                retrieved_at=dt.datetime(2026, 1, 1, tzinfo=UTC),
+            )
+
+    def test_requires_source(self):
+        with pytest.raises(ValueError, match="source must name the provider"):
+            NewsArticle(
+                article_id="provider:x:1",
+                source="",
+                title="Story",
+                published_at=dt.datetime(2025, 7, 31, 20, 5, tzinfo=UTC),
+                retrieved_at=dt.datetime(2026, 1, 1, tzinfo=UTC),
+            )
 
     def test_normalizes_tickers(self):
         article = make_article(tickers=("aapl", "aapl", " msft ", ""))
@@ -155,11 +173,33 @@ class TestEnumCoercion:
 class TestFinancialEvent:
     def test_requires_article_reference(self):
         with pytest.raises(ValueError, match="must name the source article"):
-            make_event(article_id="")
+            FinancialEvent(
+                event_id="evt:x",
+                article_id="",
+                source="massive",
+                tickers=("AAPL",),
+                event_type=EventType.EARNINGS,
+                direction=Direction.POSITIVE,
+                published_at=dt.datetime(2025, 7, 31, 20, 5, tzinfo=UTC),
+                analyzed_at=dt.datetime(2026, 1, 1, tzinfo=UTC),
+                analyzer="deterministic",
+                analyzer_version="1.0.0",
+            )
 
     def test_requires_analyzer_identity(self):
         with pytest.raises(ValueError, match="analyzer and analyzer_version"):
-            make_event(analyzer="")
+            FinancialEvent(
+                event_id="evt:x",
+                article_id="provider:x:1",
+                source="massive",
+                tickers=("AAPL",),
+                event_type=EventType.EARNINGS,
+                direction=Direction.POSITIVE,
+                published_at=dt.datetime(2025, 7, 31, 20, 5, tzinfo=UTC),
+                analyzed_at=dt.datetime(2026, 1, 1, tzinfo=UTC),
+                analyzer="",
+                analyzer_version="",
+            )
 
     @pytest.mark.parametrize("field", ["magnitude", "confidence"])
     @pytest.mark.parametrize("value", [-0.1, 1.1, float("nan")])

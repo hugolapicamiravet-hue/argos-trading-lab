@@ -12,9 +12,11 @@ Every fixture here is synthetic and self-authored. Two reasons, not one:
 from __future__ import annotations
 
 import datetime as dt
+from dataclasses import replace
 
 import pytest
 
+from argos.news.dedupe import article_key
 from argos.news.models import FinancialEvent, NewsArticle
 
 UTC = dt.UTC
@@ -54,7 +56,7 @@ def make_payload(
 
 def make_article(
     *,
-    article_id: str = "provider:massive:n1",
+    article_id: str | None = None,
     title: str = "Apple beats Q3 earnings expectations",
     summary: str | None = "Record revenue driven by services.",
     published_at: dt.datetime = dt.datetime(2025, 7, 31, 20, 5, tzinfo=UTC),
@@ -64,8 +66,14 @@ def make_article(
     tickers: tuple[str, ...] = ("AAPL",),
     raw_source_id: str | None = "n1",
 ) -> NewsArticle:
-    return NewsArticle(
-        article_id=article_id,
+    """A normalized article, with `article_id` derived unless given explicitly.
+
+    Deriving it matters: a hardcoded id would make every "distinct" article in a
+    test share one identity, and dedupe would then silently collapse them. That
+    failure mode looks like a passing test.
+    """
+    article = NewsArticle(
+        article_id=article_id or "__pending__",
         source="massive",
         title=title,
         summary=summary,
@@ -76,11 +84,14 @@ def make_article(
         tickers=tickers,
         raw_source_id=raw_source_id,
     )
+    if article_id is not None:
+        return article
+    return replace(article, article_id=article_key(article))
 
 
 def make_event(
     *,
-    article_id: str = "provider:massive:n1",
+    article_id: str | None = None,
     published_at: dt.datetime = dt.datetime(2025, 7, 31, 20, 5, tzinfo=UTC),
     direction: object = "POSITIVE",
     event_type: object = "EARNINGS",
@@ -89,6 +100,7 @@ def make_event(
     tickers: tuple[str, ...] = ("AAPL",),
     analyzer: str = "deterministic",
     analyzed_at: dt.datetime = ANALYZED_AT,
+    event_id: str | None = None,
 ) -> FinancialEvent:
     from argos.news.models import Direction, EventType
 
@@ -98,9 +110,10 @@ def make_event(
     resolved_type = (
         event_type if isinstance(event_type, EventType) else EventType.coerce(event_type)
     )
+    resolved_article_id = article_id or make_article().article_id
     return FinancialEvent(
-        event_id=f"evt:{article_id}",
-        article_id=article_id,
+        event_id=event_id or f"evt:{resolved_article_id}",
+        article_id=resolved_article_id,
         source="massive",
         tickers=tickers,
         event_type=resolved_type,
