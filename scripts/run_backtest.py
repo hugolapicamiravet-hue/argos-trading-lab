@@ -386,7 +386,11 @@ def _manifest_for(store: NewsStore, dataset: str, provider: str) -> NewsManifest
     the stage that ran last -- which is precisely the file an amended row is
     least likely to be hiding in.
     """
-    builder = NewsManifestBuilder(name=dataset, provider=provider)
+    # root makes the recorded paths relative to the store, so a dataset stays
+    # auditable after being moved or copied. Without it the paths are absolute
+    # (or root-prefixed, when the root is relative) and the audit resolves them
+    # against the store root a second time.
+    builder = NewsManifestBuilder(name=dataset, provider=provider, root=store.root)
     for path, add in (
         (store.raw_dir / f"{dataset}.json", builder.add_raw),
         (store.normalized_dir / f"{dataset}.jsonl", builder.add_normalized),

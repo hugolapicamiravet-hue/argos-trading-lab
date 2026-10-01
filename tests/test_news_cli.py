@@ -50,9 +50,13 @@ PAYLOAD = {
 }
 
 
-def news(*argv: str) -> subprocess.CompletedProcess:
+def news(*argv: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [sys.executable, str(SCRIPT), "news", *argv], capture_output=True, text=True, timeout=180
+        [sys.executable, str(SCRIPT), "news", *argv],
+        capture_output=True,
+        text=True,
+        timeout=180,
+        cwd=cwd,
     )
 
 
@@ -276,3 +280,25 @@ class TestManifestRoundTrip:
 
         with pytest.raises(ManifestError, match="no UTC offset"):
             Manifest.from_dict({"name": "s", "coverage_start": "2025-07-31T20:05:00"})
+
+class TestRelativeRoot:
+    """The manifest must survive the root the operator actually typed.
+
+    Everything else in this file uses an absolute store path, which hides the
+    failure this covers: with `--news-root data/news` the recorded paths and
+    the root are both relative, so resolving one against the other can look in
+    `data/news/data/news/` and call a file that exists missing.
+    """
+
+    def test_normalize_then_audit_passes_with_a_relative_root(self, tmp_path: Path):
+        (tmp_path / "news" / "raw").mkdir(parents=True)
+        (tmp_path / "news" / "raw" / "demo.json").write_text(json.dumps(PAYLOAD), encoding="utf-8")
+
+        normalized = news("normalize", "--news-root", "news", "--dataset", "demo", cwd=tmp_path)
+        assert normalized.returncode == 0, normalized.stderr
+        analyzed = news("analyze", "--news-root", "news", "--dataset", "demo", cwd=tmp_path)
+        assert analyzed.returncode == 0, analyzed.stderr
+
+        audited = news("audit", "--news-root", "news", "--dataset", "demo", cwd=tmp_path)
+        assert audited.returncode == 0, audited.stdout + audited.stderr
+        assert "manifest-missing-file" not in audited.stdout

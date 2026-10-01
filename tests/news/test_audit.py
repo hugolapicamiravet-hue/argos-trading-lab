@@ -19,6 +19,7 @@ not be used, WARNING means use it knowing this.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 
 import pytest
@@ -316,6 +317,50 @@ class TestAuditManifestFiles:
     def test_matching_file_is_clean(self, tmp_path):
         manifest, _ = self.build(tmp_path)
         assert audit_manifest_files(manifest, root=str(tmp_path)) == []
+
+    def test_a_root_prefixed_path_resolves_when_root_is_relative(self, tmp_path, monkeypatch):
+        # A builder that never received `root` records the path exactly as it
+        # was handed. With a relative store that is a relative, root-prefixed
+        # path like `news/normalized/set.jsonl`, and a caller who typed
+        # `--root data/news` passes a relative root too. Joining them looks in
+        # data/news/data/news/... and reports a file that is sitting right there
+        # as missing.
+        store = tmp_path / "news"
+        (store / "normalized").mkdir(parents=True)
+        target = store / "normalized" / "set.jsonl"
+        target.write_text('{"article_id": "a"}\n', encoding="utf-8")
+        data = target.read_bytes()
+        manifest = Manifest(
+            name="set",
+            created_at=dt.datetime.now(UTC),
+            normalized_files=(
+                FileDigest(
+                    path="news/normalized/set.jsonl",
+                    bytes=len(data),
+                    sha256=hashlib.sha256(data).hexdigest(),
+                ),
+            ),
+        )
+        monkeypatch.chdir(tmp_path)
+        assert audit_manifest_files(manifest, root="news") == []
+
+    def test_a_root_relative_path_is_still_resolved_against_root(self, tmp_path, monkeypatch):
+        # The other convention, and the one the CLI now produces: the manifest
+        # holds a store-relative path.
+        store = tmp_path / "news"
+        (store / "normalized").mkdir(parents=True)
+        (store / "normalized" / "set.jsonl").write_text("x\n", encoding="utf-8")
+        manifest = Manifest(
+            name="set",
+            created_at=dt.datetime.now(UTC),
+            normalized_files=(
+                FileDigest(path="normalized/set.jsonl", bytes=2, sha256="0" * 64),
+            ),
+        )
+        monkeypatch.chdir(tmp_path)
+        findings = audit_manifest_files(manifest, root="news")
+        # Located, so not "missing"; the hash is wrong on purpose.
+        assert "manifest-missing-file" not in codes(findings)
 
     def test_missing_file_is_flagged(self, tmp_path):
         manifest, target = self.build(tmp_path)

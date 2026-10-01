@@ -484,12 +484,8 @@ def audit_manifest_files(
     ):
         for digest in digests:
             candidate = Path(digest.path)
-            path = (
-                candidate
-                if not base or candidate.is_absolute()
-                else base / candidate
-            )
-            if not path.exists():
+            path = locate(candidate)
+            if path is None:
                 findings.append(
                     Finding(
                         "manifest-missing-file",
