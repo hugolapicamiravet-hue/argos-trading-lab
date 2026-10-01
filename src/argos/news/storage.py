@@ -25,6 +25,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
+from argos.errors import ArgosError
 from argos.news.models import FinancialEvent, NewsArticle
 
 RAW_DIRNAME = "raw"
@@ -32,7 +33,7 @@ NORMALIZED_DIRNAME = "normalized"
 EVENTS_DIRNAME = "events"
 
 
-class StorageError(RuntimeError):
+class StorageError(ArgosError):
     """Storage operation failed in a way the caller should surface, not hide."""
 
 

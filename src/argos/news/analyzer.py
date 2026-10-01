@@ -35,6 +35,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from argos.errors import ArgosError
 from argos.news.models import (
     Direction,
     EventType,
@@ -48,11 +49,11 @@ from argos.news.providers import redact
 DETERMINISTIC_ANALYZER_VERSION = "1.0.0"
 
 
-class AnalyzerError(RuntimeError):
+class AnalyzerError(ArgosError):
     """Analyzer could not produce a usable result."""
 
 
-class LLMConfigurationError(RuntimeError):
+class LLMConfigurationError(ArgosError):
     """The LLM adapter is missing configuration it cannot invent."""
 
 

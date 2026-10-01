@@ -23,15 +23,20 @@ import hashlib
 import json
 import os
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
+from argos.errors import ArgosError
 from argos.news.events import EventDataset
 from argos.news.features import NewsFeaturePolicy
 from argos.news.models import UTC, FinancialEvent, NewsArticle
 
 MANIFEST_SCHEMA_VERSION = 1
 MANIFEST_FILENAME = "manifest.json"
+
+
+class ManifestError(ArgosError):
+    """A manifest file is missing, unreadable, or internally inconsistent."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +124,71 @@ class Manifest:
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), indent=2, sort_keys=True, ensure_ascii=False)
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, object]) -> Manifest:
+        """Rebuild a manifest from `to_dict` output.
+
+        The inverse of `to_dict`, so a manifest written to disk can be read back
+        and audited later -- which is the only reason to persist one. Timestamps
+        must carry an explicit offset: a naive one would compare against UTC
+        fields and raise rather than report the problem.
+        """
+
+        def moment(value: object) -> dt.datetime | None:
+            if value is None:
+                return None
+            if isinstance(value, dt.datetime):
+                parsed = value
+            else:
+                text = str(value)
+                try:
+                    parsed = dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+                except ValueError as exc:
+                    raise ManifestError(f"unreadable timestamp {value!r}") from exc
+            if parsed.tzinfo is None or parsed.tzinfo.utcoffset(parsed) is None:
+                raise ManifestError(f"timestamp {value!r} has no UTC offset")
+            return parsed.astimezone(UTC)
+
+        def digests(value: object) -> tuple[FileDigest, ...]:
+            if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+                return ()
+            return tuple(
+                FileDigest(
+                    path=str(item["path"]),
+                    bytes=int(item["bytes"]),
+                    sha256=str(item["sha256"]),
+                )
+                for item in value
+            )
+
+        window = payload.get("requested_window")
+        requested: tuple[dt.datetime | None, dt.datetime | None] | None = None
+        if isinstance(window, Mapping):
+            requested = (moment(window.get("start")), moment(window.get("end")))
+        elif isinstance(window, Sequence) and not isinstance(window, (str, bytes)):
+            start, end = (list(window) + [None, None])[:2]
+            requested = (moment(start), moment(end))
+
+        known = {f.name for f in fields(cls)}
+        arguments = {key: value for key, value in payload.items() if key in known}
+        arguments.update(
+            created_at=moment(arguments.get("created_at")) or dt.datetime.now(UTC),
+            coverage_start=moment(arguments.get("coverage_start")),
+            coverage_end=moment(arguments.get("coverage_end")),
+            requested_window=requested,
+            raw_files=digests(arguments.get("raw_files")),
+            normalized_files=digests(arguments.get("normalized_files")),
+            event_files=digests(arguments.get("event_files")),
+            tickers=tuple(arguments.get("tickers") or ()),
+            analyzers=tuple(arguments.get("analyzers") or ()),
+            unknowns=tuple(arguments.get("unknowns") or ()),
+            notes=tuple(arguments.get("notes") or ()),
+            provider_limits=dict(arguments.get("provider_limits") or {}),
+            feature_policy=dict(arguments.get("feature_policy") or {}),
+            rejection_reasons=dict(arguments.get("rejection_reasons") or {}),
+        )
+        return cls(**arguments)
 
     def summary(self) -> str:
         """One-paragraph human summary, for CLI output."""

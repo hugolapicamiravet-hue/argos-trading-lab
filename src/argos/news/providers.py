@@ -37,6 +37,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from argos.errors import ArgosError
 from argos.news.models import UTC, _require_aware
 
 MASSIVE_NEWS_URL = "https://api.massive.com/v2/reference/news"
@@ -73,11 +74,11 @@ MASSIVE_PLAN_LIMITS: Mapping[str, Mapping[str, object]] = {
 }
 
 
-class ProviderError(RuntimeError):
+class ProviderError(ArgosError):
     """Provider request failed after the configured retries."""
 
 
-class ProviderConfigurationError(RuntimeError):
+class ProviderConfigurationError(ArgosError):
     """Provider is unusable: missing key, bad arguments, unsupported plan."""
 
 

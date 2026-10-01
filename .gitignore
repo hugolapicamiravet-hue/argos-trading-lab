@@ -49,10 +49,12 @@ data/news/*
 !data/news/fixtures/**
 
 # --- secrets and local environment -----------------------------------------
-# Nothing in this project reads a secret, but a downloaded provider cookie or
-# an API key added later must never reach a commit by accident.
+# API keys are read from the environment by the news and macro layer. A real
+# .env file must never reach a commit; the example listing variable names is the
+# one file here that is safe to track.
 .env
 .env.*
+!.env.example
 *.env
 secrets.json
 secrets.yaml

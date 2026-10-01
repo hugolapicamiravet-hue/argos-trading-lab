@@ -91,6 +91,7 @@ from argos.news.fred import (
 from argos.news.manifest import (
     FileDigest,
     Manifest,
+    ManifestError,
     NewsManifestBuilder,
     read_manifest,
     write_manifest,
@@ -150,6 +151,7 @@ __all__ = [
     "LLMConfigurationError",
     "MacroObservation",
     "Manifest",
+    "ManifestError",
     "MassiveNewsProvider",
     "NewsArticle",
     "NewsFeaturePolicy",

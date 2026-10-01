@@ -41,6 +41,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
+from argos.errors import ArgosError
 from argos.news.models import UTC
 
 FRED_SERIES_URL = "https://api.stlouisfed.org/fred/series/observations"
@@ -62,11 +63,11 @@ FREQUENCY_DAYS = {
 }
 
 
-class FredError(RuntimeError):
+class FredError(ArgosError):
     """FRED/ALFRED request failed."""
 
 
-class FredConfigurationError(RuntimeError):
+class FredConfigurationError(ArgosError):
     """Missing key, or a query that cannot answer a point-in-time question."""
 
 

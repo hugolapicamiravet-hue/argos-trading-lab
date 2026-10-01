@@ -48,6 +48,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
+from argos.errors import ArgosError
 from argos.news.models import UTC
 
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
@@ -66,11 +67,11 @@ DEFAULT_USER_AGENT = (
 RELEVANT_FORMS = ("10-K", "10-Q", "8-K")
 
 
-class EdgarError(RuntimeError):
+class EdgarError(ArgosError):
     """EDGAR request failed."""
 
 
-class EdgarConfigurationError(RuntimeError):
+class EdgarConfigurationError(ArgosError):
     """EDGAR client is missing configuration it cannot invent."""
 
 

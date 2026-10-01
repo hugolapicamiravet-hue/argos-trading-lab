@@ -24,6 +24,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
+from argos.errors import ArgosError
 from argos.news.dedupe import article_key
 from argos.news.events import EventDataset, audit_temporal_integrity
 from argos.news.features import NewsFeaturePolicy, first_decision_date
@@ -102,7 +103,7 @@ class AuditReport:
         }
 
 
-class AuditFailure(RuntimeError):
+class AuditFailure(ArgosError):
     """Raised by `raise_if_failed` when an invariant is broken."""
 
 
