@@ -101,6 +101,8 @@ def make_event(
     analyzer: str = "deterministic",
     analyzed_at: dt.datetime = ANALYZED_AT,
     event_id: str | None = None,
+    model: str | None = None,
+    prompt_ref: str | None = None,
 ) -> FinancialEvent:
     from argos.news.models import Direction, EventType
 
@@ -122,6 +124,8 @@ def make_event(
         analyzed_at=analyzed_at,
         analyzer=analyzer,
         analyzer_version="1.0.0",
+        model=model,
+        prompt_ref=prompt_ref,
         confidence=confidence,
         magnitude=magnitude,
     )

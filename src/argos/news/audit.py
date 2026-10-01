@@ -19,6 +19,7 @@ alongside any conclusion drawn from the data.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -28,6 +29,17 @@ from argos.news.events import EventDataset, audit_temporal_integrity
 from argos.news.features import NewsFeaturePolicy, first_decision_date
 from argos.news.manifest import Manifest
 from argos.news.models import UTC, Direction, FinancialEvent, NewsArticle
+
+#: Analyzers known to call a language model. Events from these must record which
+#: model and which prompt produced them, otherwise the dataset cannot be
+#: re-derived when a prompt changes and drift becomes invisible. A new LLM
+#: analyzer has to be added here, and the `unaudited-analyzer` warning below is
+#: what makes forgetting to do so visible.
+MODEL_BACKED_ANALYZERS = frozenset({"openai"})
+
+#: Analyzers whose output is reproducible from its inputs and version alone, so
+#: a missing model is expected rather than a defect.
+RULE_BASED_ANALYZERS = frozenset({"deterministic"})
 
 
 class Severity(StrEnum):
@@ -118,6 +130,10 @@ def audit_timestamps(
             article.published_at
         )
         if offset is None:
+            # Record and continue. Every comparison below mixes naive and aware
+            # values, and comparing those raises TypeError, so an audit that
+            # crashed on the first hand-edited timestamp would report nothing
+            # about the file that is most suspect.
             findings.append(
                 Finding(
                     "timestamp-naive",
@@ -125,6 +141,7 @@ def audit_timestamps(
                     f"article {article.article_id} has a naive published_at",
                 )
             )
+            continue
         if article.retrieved_at < article.published_at:
             findings.append(
                 Finding(
@@ -149,6 +166,9 @@ def audit_timestamps(
                     "which is not in the article set",
                 )
             )
+            continue
+        if article.published_at.tzinfo is None or event.published_at.tzinfo is None:
+            # Already reported above for the article; comparing would raise.
             continue
         if article.published_at != event.published_at:
             findings.append(
@@ -232,7 +252,9 @@ def audit_coverage(
     return findings
 
 
-def audit_duplicates(articles: Sequence[NewsArticle]) -> list[Finding]:
+def audit_duplicates(
+    articles: Sequence[NewsArticle], events: Sequence[FinancialEvent] = ()
+) -> list[Finding]:
     """Detect surviving duplicates that would double-count an article's weight."""
     findings: list[Finding] = []
     by_identity: dict[str, list[NewsArticle]] = {}
@@ -266,11 +288,35 @@ def audit_duplicates(articles: Sequence[NewsArticle]) -> list[Finding]:
                     f"different identities: {', '.join(sorted(a.article_id for a in group))}",
                 )
             )
+
+    # Repeated event ids. Storage appends are idempotent, so these come from a
+    # merged or hand-edited event file -- and `daily_news_score` sums one
+    # contribution per row, so a duplicate silently scales that day's score.
+    repeated: dict[str, int] = {}
+    for event in events:
+        repeated[event.event_id] = repeated.get(event.event_id, 0) + 1
+    for event_id, count in sorted(repeated.items()):
+        if count > 1:
+            findings.append(
+                Finding(
+                    "duplicate-events",
+                    Severity.ERROR,
+                    f"event id {event_id} appears {count} times; each row contributes to the "
+                    "daily score, so the duplicate will double-count it",
+                )
+            )
     return findings
 
 
 def audit_provenance(events: Sequence[FinancialEvent]) -> list[Finding]:
-    """Every event must name its analyzer, version, and source article."""
+    """Every event must name its analyzer, version, and source article.
+
+    Model-backed events must additionally name the model and the prompt. An
+    LLM inference recorded without them cannot be reproduced when the prompt
+    changes, which is how silent drift stays invisible across a long-running
+    pipeline. Rule-based analyzers are exempt: their output follows from the
+    inputs and the version alone.
+    """
     findings: list[Finding] = []
     for event in events:
         if not event.analyzer or not event.analyzer_version:
@@ -289,6 +335,40 @@ def audit_provenance(events: Sequence[FinancialEvent]) -> list[Finding]:
                     f"event {event.event_id} has no article reference",
                 )
             )
+
+        if (event.model is None) != (event.prompt_ref is None):
+            # One without the other means a field was lost on the way to disk,
+            # not that the analyzer is rule-based.
+            findings.append(
+                Finding(
+                    "incomplete-model-provenance",
+                    Severity.ERROR,
+                    f"event {event.event_id} records model={event.model!r} but "
+                    f"prompt_ref={event.prompt_ref!r}; both or neither",
+                )
+            )
+        elif event.analyzer in MODEL_BACKED_ANALYZERS and event.model is None:
+            findings.append(
+                Finding(
+                    "missing-model-identity",
+                    Severity.ERROR,
+                    f"event {event.event_id} came from model-backed analyzer "
+                    f"{event.analyzer!r} but records no model",
+                )
+            )
+        elif event.analyzer not in MODEL_BACKED_ANALYZERS | RULE_BASED_ANALYZERS:
+            # Not an error: a custom analyzer is legitimate. But its events get
+            # no model/provenance checking, and the caller should know that
+            # rather than assume they were checked.
+            findings.append(
+                Finding(
+                    "unaudited-analyzer",
+                    Severity.WARNING,
+                    f"event {event.event_id} used analyzer {event.analyzer!r}, which is not "
+                    "classified as model-backed or rule-based, so its model and prompt "
+                    "provenance were not verified",
+                )
+            )
     return findings
 
 
@@ -301,9 +381,15 @@ def audit_signal_leakage(
     publication date under the active policy. An event that could influence a
     decision on its own publication day would make every backtest that used it
     optimistic by construction, so this check is not decorative.
+
+    Also reports events the scoring policy discards without saying so. A
+    `require_ticker` policy drops untagged events on the floor, and a dataset
+    where most events are untagged can still audit clean while contributing
+    nothing to a score. Silence there reads as coverage.
     """
     active = policy or NewsFeaturePolicy()
     findings: list[Finding] = []
+    untagged: list[str] = []
     for event in events:
         decision_date = first_decision_date(
             event.published_at, lag_days=active.publication_lag_days
@@ -318,6 +404,18 @@ def audit_signal_leakage(
                     f"date; the policy requires a lag of {active.publication_lag_days} day(s)",
                 )
             )
+        if active.require_ticker and not event.tickers:
+            untagged.append(event.event_id)
+
+    if untagged:
+        findings.append(
+            Finding(
+                "untagged-events-dropped",
+                Severity.WARNING,
+                f"{len(untagged)} event(s) carry no ticker and will be dropped by the "
+                f"require_ticker policy, e.g. {', '.join(sorted(untagged)[:5])}",
+            )
+        )
     return findings
 
 
@@ -389,6 +487,21 @@ def audit_manifest_files(
                         f"{digest.path} is {actual} bytes, manifest records {digest.bytes}",
                     )
                 )
+                continue
+            # Size alone is not identity. Two datasets of the same length are
+            # common -- a fetch that stopped one article short has exactly the
+            # byte count of a complete one once row lengths line up -- so the
+            # hash is what actually proves the file is the one described.
+            content_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+            if digest.sha256 and content_hash != digest.sha256:
+                findings.append(
+                    Finding(
+                        "manifest-hash-mismatch",
+                        Severity.ERROR,
+                        f"{digest.path} content hash {content_hash[:12]} does not match the "
+                        f"manifest's {digest.sha256[:12]}",
+                    )
+                )
     return findings
 
 
@@ -414,7 +527,7 @@ def run_audit(
 
     findings: list[Finding] = []
     findings.extend(audit_timestamps(article_list, event_list))
-    findings.extend(audit_duplicates(article_list))
+    findings.extend(audit_duplicates(article_list, event_list))
     findings.extend(audit_provenance(event_list))
     findings.extend(audit_signal_leakage(event_list, policy=policy))
     findings.extend(audit_direction_consistency(event_list))
