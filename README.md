@@ -4,8 +4,14 @@ Educational and experimental software-engineering project to study trading
 strategies rigorously: what a strategy actually did, what it risked, and what it
 would have needed to survive realistic costs.
 
-**Virtual money only. No broker integration, no order routing, no live trading,
-and no AI of any kind in this version.**
+**Virtual money only. No broker integration, no order routing and no live
+trading.**
+
+An LLM is used in one place: to classify a news article into a typed financial
+event. It is never asked for a price, a direction to trade, a position size or a
+timing decision, and a news feature cannot set size, override a risk limit or
+place an order — the event type has no field in which to express any of those.
+Every model call records its model id and prompt version.
 
 The purpose is not to find a profitable strategy. It is to build a harness whose
 numbers can be trusted, so that a future version can ask harder questions of a
@@ -20,10 +26,13 @@ sound.
 4. Measure return, risk, drawdown and time in the market with documented formulas.
 5. Compare strategies on a common evaluation window, with a benchmark.
 6. Test the critical logic, including the cases that would flatter a result.
+7. Build a point-in-time news and macro dataset: raw payload → validated article
+   → dated financial event → scoreable feature, with an audit that fails when the
+   result would have been knowable earlier than it was published.
 
-Deliberately out of scope: frontend, database, Docker, microservices, LLM,
-news, sentiment, machine learning, reinforcement learning, parameter
-optimisation, broker integration, paper trading.
+Deliberately out of scope: frontend, database, Docker, microservices, parameter
+optimisation, broker integration, paper trading, and any use of a model to make a
+trading decision.
 
 ## Install
 
@@ -52,6 +61,13 @@ python scripts/run_backtest.py matrix --scenarios A,B,C --export-csv data/export
 
 # Reuse only the local cache; never touches the network.
 python scripts/run_backtest.py compare --offline
+
+# The news pipeline: fetch → normalize → analyze → audit.
+python scripts/run_backtest.py news fetch     --dataset demo --start 2024-01-01 --end 2025-12-31
+python scripts/run_backtest.py news normalize --dataset demo
+python scripts/run_backtest.py news analyze   --dataset demo
+python scripts/run_backtest.py news inspect   --dataset demo
+python scripts/run_backtest.py news audit     --dataset demo --expected-start 2024-01-01
 ```
 
 Defaults: `SPY`, daily bars, `2020-01-01` → `2025-12-31`, 10,000 initial capital,
@@ -65,6 +81,10 @@ Common to every subcommand: `--ticker`, `--start`, `--end`, `--initial-capital`,
 
 `--debug` turns a one-line error into a full traceback. Without it, every
 expected failure prints exactly one line and exits with code 1.
+
+The `news` group takes its own arguments: `--dataset`, `--provider`,
+`--news-root` and `--debug`, plus `--expected-start`, `--warnings-as-errors`
+and `--json` for `audit`. See [docs/news-data.md](docs/news-data.md).
 
 ## Architecture
 
@@ -80,6 +100,7 @@ expected failure prints exactly one line and exits with code 1.
 | `comparison.py` | Common window, rebasing, cost scenarios, comparison result types. |
 | `experiment.py` | The multi-asset multi-window matrix, its CSV export and its descriptive summary. |
 | `report.py` | Formatting only. No trading logic, no metric computation. |
+| `news/` | Point-in-time news and macro: providers, normalization, dedupe, storage, analysis, features, manifest, audit. Facts and inferences are separate types; an event cannot express size or order. |
 | `scripts/run_backtest.py` | CLI wiring. |
 
 The dependency direction is one-way: `datafeed → strategy → engine → metrics →
@@ -227,6 +248,13 @@ never NaN, positions are never short, the accounting identity
 `equity == cash + units * close` holds on every single bar, costs monotonically
 reduce the outcome, and no metric is ever infinite.
 
+The news suite is offline by construction: synthetic payloads, an injected HTTP
+opener and an injected transport, so no test can reach a provider or spend a key.
+It pins the cases that would flatter a result — a naive timestamp, an event
+stamped before its article, a duplicate event id that would double a score, a
+same-length edit to a stored file, and coverage that starts five years after the
+window a caller asked for.
+
 ## Known limitations
 
 - **yfinance is not a professional data source.** It is scraper-backed, subject
@@ -256,5 +284,19 @@ reduce the outcome, and no metric is ever infinite.
   Optimising them would turn this into a curve-fitting exercise.
 - **A strategy that never warms up cannot be compared.** The error is explicit;
   there is no partial-window fallback.
+- **News coverage is limited by the provider plan.** The free tier serves roughly
+  two years of history, so this pipeline as configured cannot support a
+  2020–2025 news backtest. `news audit --expected-start` is the check: coverage
+  that starts late is reported, and fatal when the window is declared.
+- **Provider licensing and retention terms are unresolved** for Massive/Polygon.
+  Whether payloads may be stored or redistributed has not been established, so
+  no provider data is committed and no derived research may be published from it
+  without checking first.
+- **LLM event classification is uncalibrated.** `confidence` comes from the
+  model, not from a study against realized outcomes. This is why `magnitude` is
+  recorded but never used to scale anything, and why a news feature cannot
+  influence position size.
+- **Ticker tags are the provider's, unverified** against an instrument master.
+  A mis-tagged article scores the wrong symbol.
 - **Educational and experimental purpose.** Not financial advice and not suitable
   for trading real money.
