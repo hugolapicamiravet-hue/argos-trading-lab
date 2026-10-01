@@ -48,6 +48,10 @@ data/news/*
 !data/news/fixtures/
 !data/news/fixtures/**
 
+# Synthetic output of `scripts/news_reality_check.py`. Self-authored, and
+# regenerable by rerunning the script, so there is nothing to review in it.
+data/reality_check/
+
 # --- secrets and local environment -----------------------------------------
 # API keys are read from the environment by the news and macro layer. A real
 # .env file must never reach a commit; the example listing variable names is the
