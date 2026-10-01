@@ -203,6 +203,11 @@ def align_score_to_index(
     reading it carefully.
     """
     if not score:
+        # Still parse the index dates. Returning early would silently accept a
+        # malformed index just because there happened to be no news, which is a
+        # trap that only appears in the one run where you are not looking.
+        for raw_date in index_dates:
+            _to_date(raw_date)
         return [0.0] * len(index_dates)
 
     ordered = sorted(score.items())

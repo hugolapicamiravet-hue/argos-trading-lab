@@ -67,21 +67,6 @@ _TRACKING_PARAMS = frozenset(
     }
 )
 
-_LOWER_HOST_SUFFIXES = (
-    ".com",
-    ".co.uk",
-    ".es",
-    ".de",
-    ".fr",
-    ".net",
-    ".org",
-    ".io",
-    ".co",
-    ".news",
-    ".business",
-)
-
-
 def canonical_url(url: str | None) -> str | None:
     """Reduce a URL to a comparable identity, or None if there is none.
 
@@ -113,13 +98,14 @@ def canonical_url(url: str | None) -> str | None:
         # Treat http and https as the same article; feeds disagree constantly.
         scheme = "https"
 
+    # Take the part after any userinfo, which also discards credentials
+    # embedded in a URL so they cannot leak into a stored dataset.
     host = parts.netloc.lower().split("@")[-1]
     if host.endswith(":80") or host.endswith(":443"):
         host = host.rsplit(":", 1)[0]
-    for suffix in _LOWER_HOST_SUFFIXES:
-        if host.endswith(suffix) and host != suffix.lstrip("."):
-            host = host[: -len(suffix)]
-            break
+    # Strip only a leading `www.`. The rest of the host is load-bearing:
+    # `news.example.com` and `example.com` are different pages, and reducing
+    # either to a bare label would let two unrelated sites share an identity.
     if host.startswith("www."):
         host = host[4:]
 
