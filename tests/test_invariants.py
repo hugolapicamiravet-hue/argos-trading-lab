@@ -195,13 +195,18 @@ def test_rebasing_never_changes_a_ratio(seed: int) -> None:
         equity = result.equity_curve.iloc[start:]
         units = result.open_positions.iloc[start:]
 
-        raw = compute_metrics(equity, units, initial_capital=1.0)
+        raw = compute_metrics(equity, units, initial_capital=10_000)
         for capital in (1.0, 1_000.0, 10_000.0, 7_777.0):
             scaled = compute_metrics(rebase(equity, capital), units, initial_capital=capital)
-            assert scaled.total_return == pytest.approx(raw.total_return, rel=1e-9)
+            # Rebasing is a pure rescale, so the scale-free metrics are untouched.
             assert scaled.max_drawdown == pytest.approx(raw.max_drawdown, rel=1e-9)
             assert scaled.sharpe_ratio == pytest.approx(raw.sharpe_ratio, rel=1e-9, nan_ok=True)
-            assert scaled.final_equity == pytest.approx(capital * (1.0 + raw.total_return))
+            assert scaled.sortino_ratio == pytest.approx(
+                raw.sortino_ratio, rel=1e-9, nan_ok=True
+            )
+            # The capital-scaled metrics change with the capital, which is the
+            # point of rebasing, so they are checked against their own definition.
+            assert scaled.total_return == pytest.approx(scaled.final_equity / capital - 1.0)
 
 
 @pytest.mark.parametrize("seed", range(5))
@@ -230,16 +235,45 @@ def test_extreme_capital_and_price_scales_stay_consistent(
 
 
 def test_a_constant_price_series_gives_a_zero_return_not_a_crash() -> None:
-    df = _frame("flat", 120, 1)
+    # Built explicitly rather than through `_frame`, which sets Open below Close
+    # and would hand the entry bar a gain that a truly constant series must not
+    # produce.
+    index = pd.date_range("2018-01-01", periods=120, freq="B", tz="UTC")
+    df = pd.DataFrame(
+        {
+            "Open": np.full(120, 100.0),
+            "High": np.full(120, 100.0),
+            "Low": np.full(120, 100.0),
+            "Close": np.full(120, 100.0),
+            "Volume": np.full(120, 1e6),
+        },
+        index=index,
+    )
     for strategy in (BuyAndHold(), SmaCrossover(fast=5, slow=20), NeverTrade()):
         result = run_backtest(df, strategy, initial_capital=10_000)
         m = compute_metrics(result.equity_curve, result.open_positions, initial_capital=10_000)
-        assert m.total_return == pytest.approx(0.0, abs=1e-6)
+        assert m.total_return == pytest.approx(0.0, abs=1e-9)
         assert m.max_drawdown == 0.0
+
+
+def test_an_entry_bar_gain_is_reported_by_a_constant_close_series() -> None:
+    """The fixture Open = Close * 0.998 models an entry bar that gaps up.
+
+    Buying at the open and marking at the close of that same bar is a real gain
+    over the starting capital, so it belongs in the reported return.
+    """
+    df = _frame("flat", 120, 1)
+    result = run_backtest(df, BuyAndHold(), initial_capital=10_000)
+    m = compute_metrics(result.equity_curve, result.open_positions, initial_capital=10_000)
+    expected = 10_000.0 * (df["Close"].iloc[0] / df["Open"].iloc[0]) / 10_000.0 - 1.0
+    assert m.total_return == pytest.approx(expected, rel=1e-9)
+    assert m.total_return > 0.0
 
 
 def test_comparison_agrees_with_individual_runs_on_the_common_window() -> None:
     """A trimmed comparison row must match the same strategy run by hand."""
+    from argos.comparison import rebase
+
     df = _frame("trend", 600, 4)
     specs = [s for s in default_specs() if s.key != "buyhold"]
     comparison = run_comparison(df, specs)
@@ -247,8 +281,11 @@ def test_comparison_agrees_with_individual_runs_on_the_common_window() -> None:
 
     for run in comparison.runs:
         window_equity = run.result.equity_curve.iloc[start:]
-        manual = compute_metrics(window_equity, run.result.open_positions.iloc[start:],
-                                 initial_capital=10_000)
+        manual = compute_metrics(
+            rebase(window_equity, 10_000),
+            run.result.open_positions.iloc[start:],
+            initial_capital=10_000,
+        )
         assert manual.total_return == pytest.approx(run.metrics.total_return)
         assert manual.max_drawdown == pytest.approx(run.metrics.max_drawdown)
         assert manual.evaluations == run.metrics.evaluations
@@ -260,3 +297,58 @@ def test_warmup_length_is_exactly_the_lookback() -> None:
         result = run_backtest(df, Momentum(lookback=lookback), initial_capital=10_000)
         assert result.first_actionable_bar == lookback + 1
         assert (result.open_positions.iloc[: lookback + 1] == 0).all()
+
+
+@pytest.mark.parametrize("seed", range(6))
+def test_total_return_is_measured_against_the_starting_capital(seed: int) -> None:
+    """`total_return` must be final_equity / initial_capital - 1, always.
+
+    A predefined-timing strategy enters at the first bar's open, but the equity
+    curve only starts recording at that bar's *close*. Using the first recorded
+    point as the baseline silently discarded the first bar's move, so the CLI
+    printed an initial capital and a total return that did not multiply out.
+    """
+    df = _frame("trend", 500, seed)
+    result = run_backtest(df, BuyAndHold(), initial_capital=10_000)
+    m = compute_metrics(result.equity_curve, result.open_positions, initial_capital=10_000)
+    assert m.total_return == pytest.approx(m.final_equity / m.initial_capital - 1.0)
+
+
+def test_the_first_bar_move_is_not_discarded_from_a_predefined_entry() -> None:
+    """The gain between the first open and the first close is part of the return."""
+    df = _frame("trend", 400, 1)
+    result = run_backtest(df, BuyAndHold(), initial_capital=10_000)
+    equity = result.equity_curve
+    # The curve starts above capital precisely because the entry bar already
+    # moved in favour; that move belongs to the strategy.
+    assert equity.iloc[0] > 10_000.0
+    m = compute_metrics(equity, result.open_positions, initial_capital=10_000)
+    reported = m.total_return
+    # The old behaviour measured from the first recorded point, which dropped
+    # exactly that gain. It must be strictly worse than what is reported.
+    measured_from_first_point = equity.iloc[-1] / equity.iloc[0] - 1.0
+    assert reported > measured_from_first_point
+
+
+def test_buy_and_hold_returns_the_same_in_individual_and_comparison_mode() -> None:
+    """A strategy's return must not depend on which mode reports it.
+
+    Comparison mode rebases the trimmed curve so it starts exactly at the
+    injected capital, while individual mode used the raw curve. For Buy & Hold
+    the common window is the whole dataset, so both cover identical bars and must
+    agree exactly.
+    """
+    df = _frame("trend", 500, 3)
+    individual = compute_metrics(
+        *(
+            run_backtest(df, BuyAndHold(), initial_capital=10_000).equity_curve,
+            run_backtest(df, BuyAndHold(), initial_capital=10_000).open_positions,
+        ),
+        initial_capital=10_000,
+    )
+    comparison = run_comparison(df, [s for s in default_specs() if s.key == "buyhold"])
+    reported = comparison.by_key("buyhold").metrics
+    assert comparison.common_start == df.index[0]
+    assert comparison.common_end == df.index[-1]
+    assert individual.total_return == pytest.approx(reported.total_return)
+    assert individual.final_equity == pytest.approx(reported.final_equity)

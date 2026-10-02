@@ -197,7 +197,13 @@ def run_comparison(
     for spec in specs:
         result = results[spec.key]
         equity, units = _trim(result, start, end)
-        rebased = rebase(equity, initial_capital)
+        # Rebasing exists to inject fresh capital at a window that begins part
+        # way through a run, where the portfolio arrives already holding a
+        # position. When the window is not trimmed, the curve already starts from
+        # the capital the run was given, and rescaling it would discard whatever
+        # the first bar did -- which would make this mode disagree with an
+        # individual run covering exactly the same bars.
+        rebased = rebase(equity, initial_capital) if start > 0 else equity
         runs.append(
             ComparisonRun(
                 key=spec.key,

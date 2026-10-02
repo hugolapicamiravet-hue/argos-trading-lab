@@ -195,8 +195,14 @@ def compute_metrics(
 ) -> Metrics:
     """Compute the full metric set for one strategy over one window.
 
-    `initial_capital` is the capital the window is measured against, which after
-    rebasing is the rebased starting value.
+    `initial_capital` is the capital the window is measured against. It is the
+    baseline for `total_return` and `cagr`, and it is deliberately not taken from
+    the first recorded point of the curve: a predefined-timing strategy enters
+    at the first bar's open, so its first recorded equity -- that bar's close --
+    already contains one bar's move. Basing the return on it discarded the first
+    bar and made `total_return` inconsistent with the `initial_capital` and
+    `final_equity` printed beside it. Ratio metrics are unaffected either way,
+    since they are invariant to the choice of baseline.
     """
     if equity_curve.empty:
         raise ValueError("equity curve must not be empty")
@@ -205,7 +211,7 @@ def compute_metrics(
 
     _positive(equity_curve.to_numpy())
 
-    initial = float(equity_curve.iloc[0])
+    initial = float(initial_capital)
     final = float(equity_curve.iloc[-1])
     returns = daily_returns(equity_curve)
     calendar_days = float((equity_curve.index[-1] - equity_curve.index[0]).days)

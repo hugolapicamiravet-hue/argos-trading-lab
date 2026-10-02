@@ -109,28 +109,39 @@ def test_rebase_starts_the_curve_at_the_requested_capital() -> None:
 
 
 def test_rebase_preserves_every_ratio_metric() -> None:
-    """The core promise: scaling money away cannot change risk or reward ratios."""
+    """The core promise: scaling money away cannot change risk or reward ratios.
+
+    Invariance is only meaningful when both sides measure the same window from
+    the same baseline, so every arm here is rebased to its own capital. Comparing
+    a rebased curve against an unrebased one would measure capital-scaled
+    metrics, not ratios.
+    """
     df = _frame(500)
     result = run_backtest(df, SmaCrossover(fast=20, slow=50), initial_capital=10_000)
     window = result.equity_curve.iloc[127:]
     units = result.open_positions.iloc[127:]
 
-    raw = compute_metrics(window, units, initial_capital=10_000.0)
-    scaled = compute_metrics(rebase(window, 10_000.0), units, initial_capital=10_000.0)
+    scaled = {
+        capital: compute_metrics(rebase(window, capital), units, initial_capital=capital)
+        for capital in (1.0, 10_000.0, 7_777.0)
+    }
+    raw = scaled[10_000.0]
 
-    assert scaled.total_return == pytest.approx(raw.total_return)
-    assert scaled.cagr == pytest.approx(raw.cagr)
-    assert scaled.annualized_volatility == pytest.approx(raw.annualized_volatility)
-    assert scaled.sharpe_ratio == pytest.approx(raw.sharpe_ratio)
-    assert scaled.sortino_ratio == pytest.approx(raw.sortino_ratio)
-    assert scaled.max_drawdown == pytest.approx(raw.max_drawdown)
-    assert scaled.calmar_ratio == pytest.approx(raw.calmar_ratio)
-    assert scaled.exposure == pytest.approx(raw.exposure)
-    assert scaled.evaluations == raw.evaluations
-    # final_equity is *not* invariant: rescaling the money is the point. What is
-    # preserved is the return, so the rebased level must follow from it.
-    assert scaled.final_equity == pytest.approx(10_000.0 * (1.0 + raw.total_return))
-    assert scaled.final_equity != pytest.approx(raw.final_equity)
+    for capital, metrics in scaled.items():
+        assert metrics.annualized_volatility == pytest.approx(raw.annualized_volatility)
+        assert metrics.sharpe_ratio == pytest.approx(raw.sharpe_ratio)
+        assert metrics.sortino_ratio == pytest.approx(raw.sortino_ratio)
+        assert metrics.max_drawdown == pytest.approx(raw.max_drawdown)
+        assert metrics.calmar_ratio == pytest.approx(raw.calmar_ratio)
+        assert metrics.exposure == pytest.approx(raw.exposure)
+        assert metrics.evaluations == raw.evaluations
+        # total_return, cagr and final_equity are *not* invariant: rescaling the
+        # money is the point. Each must instead follow from its own capital.
+        assert metrics.total_return == pytest.approx(metrics.final_equity / capital - 1.0)
+        assert metrics.final_equity == pytest.approx(capital * (1.0 + metrics.total_return))
+
+    # The rebased level really did move, otherwise nothing above is a real test.
+    assert scaled[1.0].final_equity != pytest.approx(scaled[10_000.0].final_equity)
 
 
 def test_rebased_final_equity_follows_the_same_return() -> None:
