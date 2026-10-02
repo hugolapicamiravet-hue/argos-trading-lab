@@ -293,7 +293,20 @@ class NewsManifestBuilder:
         for event in events:
             count += 1
             self._tickers.update(event.tickers)
-            key = (event.analyzer, event.analyzer_version, event.model)
+            # `prompt_ref` belongs in the key, not just in the payload. Two runs
+            # of the same analyzer version and model under different prompts
+            # produce different interpretations, and collapsing them into one row
+            # would report the first prompt as the one behind every event.
+            key = (
+                event.analyzer,
+                event.analyzer_version,
+                event.model,
+                event.prompt_ref,
+            )
+            # Counted per event, not per analyzer. Reading this as "did the first
+            # event fail" made a dataset where the model failed on most records
+            # report a single failure and look clean.
+            failed = 1 if event.rationale is None and event.confidence == 0.0 else 0
             existing = self._analyzers.get(key)
             if existing is None:
                 self._analyzers[key] = {
@@ -302,10 +315,11 @@ class NewsManifestBuilder:
                     "model": event.model,
                     "prompt_ref": event.prompt_ref,
                     "events": 1,
-                    "failed": 1 if event.rationale is None and event.confidence == 0.0 else 0,
+                    "failed": failed,
                 }
             else:
                 existing["events"] = int(existing["events"]) + 1
+                existing["failed"] = int(existing["failed"]) + failed
             start, end = self._coverage
             self._coverage = (
                 event.published_at if start is None else min(start, event.published_at),
@@ -367,7 +381,8 @@ class NewsManifestBuilder:
             analyzers=tuple(
                 self._analyzers[key]
                 for key in sorted(
-                    self._analyzers, key=lambda k: (k[0], k[1], k[2] or "")
+                    self._analyzers,
+                    key=lambda k: (k[0], k[1], k[2] or "", k[3] or ""),
                 )
             ),
             provider_limits=dict(self.provider_limits),
