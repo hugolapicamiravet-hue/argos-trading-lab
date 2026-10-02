@@ -217,7 +217,20 @@ closed to `UNKNOWN` and are cached, so a retry storm cannot turn one outage into
 an LLM bill. Transport errors are redacted.
 
 **EDGAR** needs no key but does require a descriptive User-Agent, and SEC
-fair-access guidance asks for no more than 10 requests/second.
+fair-access guidance asks for no more than 10 requests/second. Its timestamps are
+the reason the client parses rather than assumes: `acceptanceDateTime` arrives in
+Eastern time with an offset attached, and attaching UTC to that string instead of
+converting it would move every filing hours earlier than it was accepted — early
+enough to leak it into a backtest that decides what was knowable from the
+acceptance time. `filingDate` and `reportDate` are period and filing metadata, not
+availability, and never gate visibility.
+
+**ALFRED** is the default over plain FRED, because plain FRED cannot answer the
+only question a backtest needs. Asking FRED for a 2023 observation today returns
+the current revision, which embeds everything the economy did afterwards. Every
+ALFRED request carries `realtime_start`/`realtime_end` to pin the vintage window,
+and an observation's `available_at` is set to the close of its `vintage_end` so a
+revision cannot be read on the morning it was first published.
 
 ---
 
@@ -303,7 +316,17 @@ Errors mean the dataset should not be used. Warnings mean use it knowing this.
 The hash check matters more than its size suggests. Size alone is not identity: a
 fetch that stopped one record short has almost the same byte count as a complete
 one, and an amended row of the same length is indistinguishable. Only the
-SHA-256 proves the file is the one the manifest describes.
+SHA-256 proves the file is the one the manifest describes. It also only means
+something because the writers are deterministic: every persisted artifact sorts
+its keys, so identical input produces identical bytes and a digest that moved
+would indicate changed content rather than a reordered dictionary.
+
+The manifest counts analyzer outcomes per event, grouped by analyzer, version,
+model *and* prompt. All four are in the key because they change what an event
+means, and collapsing them would attribute every event to whichever prompt
+happened to run first. `failed` counts each event the analyzer returned without a
+rationale or confidence, so a run where the model failed on most of the corpus
+reports most failures instead of one.
 
 ---
 
