@@ -44,9 +44,7 @@ from typing import Protocol
 from argos.errors import ArgosError
 from argos.news.models import UTC
 
-FRED_SERIES_URL = "https://api.stlouisfed.org/fred/series/observations"
 ALFRED_SERIES_URL = "https://api.stlouisfed.org/alfred/series/observations"
-FRED_SERIES_BASE = "https://fred.stlouisfed.org/graph/fredgraph.csv"
 
 DEFAULT_FRED_TIMEOUT = 30.0
 DEFAULT_USER_AGENT = "argos-trading-lab/0.1 (educational backtesting lab)"
