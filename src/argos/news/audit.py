@@ -237,7 +237,10 @@ def audit_coverage(
         # manifest whose coverage predates the advertised limit is therefore
         # probably not the plan it claims to be.
         try:
-            floor = dt.datetime.fromisoformat(history_since).replace(tzinfo=UTC)
+            parsed = dt.datetime.fromisoformat(history_since)
+            # Only invent an offset when there is none; overwriting a real one
+            # would move the floor and hide the very mismatch this looks for.
+            floor = parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed
         except ValueError:
             floor = None
         if floor and manifest.coverage_start < floor:
