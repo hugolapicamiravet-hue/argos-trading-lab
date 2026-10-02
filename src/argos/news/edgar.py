@@ -143,7 +143,7 @@ class Filing:
         if not raw_acceptance:
             return None
         try:
-            accepted = dt.datetime.fromisoformat(str(raw_acceptance)).replace(tzinfo=UTC)
+            accepted = _parse_acceptance(str(raw_acceptance))
         except ValueError:
             return None
 
@@ -170,6 +170,22 @@ def _optional_str(value: object) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _parse_acceptance(raw: str) -> dt.datetime:
+    """Parse `acceptanceDateTime`, attaching UTC only when it is genuinely naive.
+
+    EDGAR has published this field both as a bare local timestamp and with an
+    explicit offset, so both shapes occur. `replace(tzinfo=UTC)` is wrong for the
+    second: it relabels 16:30-05:00 as 16:30Z and moves the filing five hours
+    earlier than reality, so a backtest would consider it public before the SEC
+    released it. Overwriting an offset destroys information that was in the
+    payload; the offset is only invented when the payload has none.
+    """
+    parsed = dt.datetime.fromisoformat(raw)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 class EdgarClient:
